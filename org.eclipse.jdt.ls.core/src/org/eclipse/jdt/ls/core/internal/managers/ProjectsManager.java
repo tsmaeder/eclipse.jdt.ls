@@ -16,7 +16,11 @@ package org.eclipse.jdt.ls.core.internal.managers;
 import static org.eclipse.jdt.ls.core.internal.JVMConfigurator.configureJVMSettings;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -60,6 +64,7 @@ import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.core.runtime.MultiStatus;
+import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.OperationCanceledException;
 import org.eclipse.core.runtime.Platform;
 import org.eclipse.core.runtime.Status;
@@ -173,9 +178,115 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 				JavaLanguageServerPlugin.logException("Failed to import projects", e);
 			}
 		}
+		this.fixProjects(preferenceManager.getPreferences().getImportClasspath(), new NullProgressMonitor());
 		if (!importStatusCollection.isOK()) {
 			throw new CoreException(importStatusCollection);
 		}
+	}
+
+	private void fixProjects(Map<String,Object> projectConfigurations, IProgressMonitor monitor) {
+		for (Entry<String, Object> entry : projectConfigurations.entrySet()) {
+			if ("remove".equals(entry.getValue())) {
+				IProject project = getWorkspaceRoot().getProject(entry.getKey());
+				if (project != null) {
+					try {
+						project.delete(true, true, monitor);
+					} catch (CoreException e) {
+						JavaLanguageServerPlugin.logException("Failed to delete project " + entry.getKey(), e);
+					}
+				}
+			}
+		}
+		for (Entry<String, Object> entry : projectConfigurations.entrySet()) {
+			if (entry.getValue() instanceof Map<?,?> config) {
+				try {
+					setProjectConfiguration(entry.getKey(), config, monitor);
+				} catch (CoreException e) {
+					JavaLanguageServerPlugin.logException("Failed to set project configuration for " + entry.getKey(), e);
+				}
+			}
+		}
+	}
+	private void setProjectConfiguration(String projectName, Map<?,?> jsonObject, IProgressMonitor monitor) throws CoreException {
+		Path projectPath = null;
+		Object pathValue = jsonObject.get("path");
+		if (pathValue instanceof String pathString) {
+			try {
+				projectPath = Path.of(pathString);
+			} catch (InvalidPathException e) {
+				JavaLanguageServerPlugin.logException("Failed to parse path " + pathString + " for project " + projectName, e);
+			}
+		}
+
+		IProject project = getWorkspaceRoot().getProject(projectName);
+		IJavaProject javaProject = null;
+		if (project.exists()) {
+			try {
+				if (projectPath != null && !Files.isSameFile(projectPath, project.getLocation().toPath())) {
+					JavaLanguageServerPlugin.log(new Status(IStatus.ERROR, IConstants.PLUGIN_ID, "Project " + projectName + " is located at " + project.getLocation() + " but the path is " + projectPath));
+					return;
+				}
+			} catch (IOException e) {
+				JavaLanguageServerPlugin.logException("Failed to check if project " + projectName + " is located at "  + projectPath, e);
+			}
+			if (!project.isOpen()) {
+				project.open(monitor);
+			}
+			if (!ProjectUtils.isJavaProject(project)) {
+				IProjectDescription description= project.getDescription();
+				description.setNatureIds(new String[] { JavaCore.NATURE_ID });
+				project.setDescription(description, monitor);
+				javaProject = configureNewJavaProject(project, monitor);
+			} else {
+				javaProject = JavaCore.create(project);
+			}
+		} else {
+			IProjectDescription description = ResourcesPlugin.getWorkspace().newProjectDescription(project.getName());
+			description.setLocationURI(projectPath.toUri());
+			description.setNatureIds(new String[] { JavaCore.NATURE_ID });
+			project.create(description, monitor);
+			project.open(monitor);
+			javaProject = configureNewJavaProject(project, monitor);
+		}
+
+		if (jsonObject.get("classpath") instanceof Map<?, ?> classpathMap) {
+			List<IClasspathEntry> newClasspath = new ArrayList<>();
+			Set<IPath> sourcePaths = new HashSet<>();
+			
+			for (Entry<?, ?> entry : classpathMap.entrySet()) {
+				if (entry.getValue() instanceof Map<?, ?> classpathEntryMap) {
+					if ("source".equals(classpathEntryMap.get("type"))) {
+						IPath sourcePath = project.getFullPath().append(entry.getKey().toString());
+						IPath output = null;
+						if (classpathEntryMap.get("output") instanceof String outputPath) {
+							output = project.getFullPath().append(outputPath);
+						} 
+						IClasspathEntry newEntry = JavaCore.newSourceEntry(sourcePath, null, null, output, null);
+						newClasspath.add(newEntry);
+						sourcePaths.add(sourcePath);
+					}
+				}
+			}
+
+			IPath projectLocation = project.getLocation();
+			for (IClasspathEntry entry : javaProject.getRawClasspath()) {
+				IPath relativePath = entry.getPath().makeRelativeTo(projectLocation);
+				if (!sourcePaths.contains(relativePath) && !"remove".equals(classpathMap.get(relativePath.toString()))) {
+					newClasspath.add(entry);
+				}
+			}
+
+			javaProject.setRawClasspath(newClasspath.toArray(new IClasspathEntry[newClasspath.size()]), monitor);
+		}
+	}
+
+	private IJavaProject configureNewJavaProject(IProject project, IProgressMonitor monitor) throws CoreException {
+		IJavaProject javaProject = JavaCore.create(project);
+		IVMInstall vmInstall = JavaRuntime.getDefaultVMInstall();
+		configureJVMSettings(javaProject, vmInstall);
+		IClasspathEntry[] classpathEntries = { JavaRuntime.getDefaultJREContainerEntry() }; 
+		javaProject.setRawClasspath(classpathEntries, monitor);
+		return javaProject;
 	}
 
 	protected void importProjectsFromConfigurationFiles(Collection<IPath> rootPaths, Collection<IPath> projectConfigurations, IProgressMonitor monitor) throws OperationCanceledException, CoreException {
@@ -199,6 +310,7 @@ public abstract class ProjectsManager implements ISaveParticipant, IProjectsMana
 				JavaLanguageServerPlugin.logException("Failed to import projects", e);
 			}
 		}
+		this.fixProjects(preferenceManager.getPreferences().getImportClasspath(), monitor);
 		if (!importStatusCollection.isOK()) {
 			throw new CoreException(importStatusCollection);
 		}

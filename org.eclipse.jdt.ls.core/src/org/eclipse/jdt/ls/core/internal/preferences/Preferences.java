@@ -489,6 +489,9 @@ public class Preferences {
 	// Project encoding settings
 	public static final String JAVA_PROJECT_ENCODING = "java.project.encoding";
 
+	// Import classpath override settings
+	public static final String JAVA_IMPORT_CLASSPATH = "java.import.classpath";
+
 	public static final String JAVA_TELEMETRY_ENABLED_KEY = "java.telemetry.enabled";
 
 	public static final String JAVA_EDIT_VALIDATE_ALL_OPEN_BUFFERS_ON_CHANGES = "java.edit.validateAllOpenBuffersOnChanges";
@@ -724,6 +727,7 @@ public class Preferences {
 	private List<String> diagnosticFilter;
 	private SearchScope searchScope;
 	private boolean inlayHintsSuppressedWhenSameNameNumberedParameter;
+	private Map<String,Object> importClasspath = new HashMap<String,Object>();
 
 	static {
 		JAVA_IMPORT_EXCLUSIONS_DEFAULT = new LinkedList<>();
@@ -1743,6 +1747,14 @@ public class Preferences {
 			prefs.setProjectEncoding(ProjectEncodingMode.fromString(projectEncoding, existing.projectEncoding));
 		}
 
+		if (getValue(configuration, JAVA_IMPORT_CLASSPATH) != null) {
+			Map<String, Object> importClasspath = (Map<String, Object>) getValue(configuration, JAVA_IMPORT_CLASSPATH);
+			if (importClasspath == null) {
+				importClasspath = new HashMap<String, Object>();
+			}
+			prefs.setImportClasspath(importClasspath);
+		}
+
 		if (getValue(configuration, JAVA_CODEACTION_SORTMEMBER_AVOIDVOLATILECHANGES) != null) {
 			boolean avoidVolatileChanges = getBoolean(configuration, JAVA_CODEACTION_SORTMEMBER_AVOIDVOLATILECHANGES, existing.avoidVolatileChanges);
 			prefs.setAvoidVolatileChanges(avoidVolatileChanges);
@@ -1847,6 +1859,15 @@ public class Preferences {
 		}
 
 		return prefs;
+	}
+
+	public Map<String,Object> getImportClasspath() {
+		return this.importClasspath;
+	}
+
+	private Preferences setImportClasspath(Map<String,Object> importClasspath) {
+		this.importClasspath = importClasspath;
+		return this;
 	}
 
 	public void setInlayHintsVariableTypesEnabled(boolean inlayHintsVariableTypesEnabled) {
